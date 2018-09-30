@@ -6,102 +6,218 @@ collisions <- read_csv("Cambs_RTC.csv")
 #import data on number of collisions per geographic coordinates ("hotspots" of collisions)
 number_collisions <- read_csv("number_collisions.csv")
 
+collisions_updated <- read_csv("collisions_updated.csv")
+
+#------------------------------------------------------#
+#--- what is the distribution of accident severity? ---#
+#------------------------------------------------------#
+collisions %>%
+  group_by(Severity) %>% 
+  summarise(prop_severity=n() / 12108)
+#the proportion of fatal accident is 0.0154, serious 0.155, slight 0.830
+
+#are bicycles more vulnerable? are severity proportions different for bicycles?
+collisions %>%
+  filter(Vehicle_1_Type == "Pedal cycle" | Vehicle_2_Type == "Pedal cycle" | Vehicle_3_Type =="Pedal cycle") %>%
+  group_by(Severity) %>% 
+  summarise(prop_severity=n() / 2665)
+#fatal: 0.00375, serious: 0.16, slight: 0.836
+
+collisions %>%
+  filter(Vehicle_1_Type != "Pedal cycle" | is.na(Vehicle_1_Type)) %>% 
+  filter(Vehicle_2_Type != "Pedal cycle" | is.na(Vehicle_2_Type)) %>% 
+  filter(Vehicle_3_Type != "Pedal cycle" | is.na(Vehicle_3_Type)) %>% 
+  group_by(Severity) %>% 
+  summarise(prop_severity=n() / 9443)
+#fatal: 0.0186, serious: 0.153, slight: 0.828
+
+#is the difference in severity classes between cycles and non cycles significant?
+severity_cycles <- collisions %>%
+  filter(Vehicle_1_Type == "Pedal cycle" | Vehicle_2_Type == "Pedal cycle" | Vehicle_3_Type =="Pedal cycle") %>%
+  count(Severity) %>% 
+  rename("cycles"=n)
+
+severity_noncycles <- collisions %>%
+  filter(Vehicle_1_Type != "Pedal cycle" | is.na(Vehicle_1_Type)) %>% 
+  filter(Vehicle_2_Type != "Pedal cycle" | is.na(Vehicle_2_Type)) %>% 
+  filter(Vehicle_3_Type != "Pedal cycle" | is.na(Vehicle_3_Type)) %>% 
+  count(Severity) %>% 
+  rename("non-cycles"=n)
+
+#merge data into one tibble
+severity <- merge(severity_cycles, severity_noncycles)
+rownames(severity) <- severity$Severity
+severity <- severity %>%
+  select(-c(Severity))
+
+#perform Chi-sq test
+chisq.test(severity)
+#we can reject hypothesis that collision severity is idependant of the involvment of a cycle in the accident
+
+#what is the ranking of accident locations for number of serious and fatal accidents?
+#are there locations where severity is higher than average?
+n_serious <- c() #create empty vector to be filled with number of serious/fatal collisions
+location <- c() #create empty vector to be filled with names of locations of collisions
+for(i in 1:dim(number_collisions)[1]){
+  #get coordinates
+  east <- number_collisions[i,]$Easting
+  north <- number_collisions[i,]$Northing
+  #get number of serious accidents
+  n_serious[i] <- collisions %>% 
+    filter(Easting >= east -25 & Easting < east +25 & Northing >= north -25 & Northing < north +25) %>%
+    filter(Severity != "Slight") %>% 
+    count() %>% 
+    .$n
+  #get name of junction, selects most frequent denomination as the same junction has different names
+  junc_names <- collisions %>% 
+    filter(Easting >= east -25 & Easting < east +25 & Northing >= north -25 & Northing < north +25) %>%
+    select(Location) %>% 
+    table()
+  location[i] <- names(junc_names[max(junc_names)])[1]
+}
+number_collisions$n_serious <- n_serious #add number of serious/fatal collisions to number_collisions tibble
+number_collisions$locations <- location #add name of junction
+
+#need to merge rows with same location name
+#save data
+write_csv(number_collisions, "collisions_updated.csv")
+
+#get most dangerous locations
+dangerous_loc <- number_collisions %>% 
+  arrange(desc(n_serious)) %>% 
+  .[1:20,]
+
 #---------------------------------------------------------------------#
 #--- what types of vehicles are involved in accidents most often ? ---#
 #---------------------------------------------------------------------#
-type_vehicles <- collisions %>%
-  count(Vehicle_1_Type, Vehicle_2_Type) %>%
+type_vehicles <- collisions %>% 
+  count(Vehicle_1_Type, Vehicle_2_Type, Vehicle_3_Type) %>%
+  arrange(desc(n))
+#car & cycle 3rd most frequent vehicle couple (2046 accidents, 23 % of accidents involving two or three vehicles)
+#car & car is first, car alone third
+
+#total number of accidents is 12108
+#how many accidents involve a cycle?
+collisions %>%
+  filter(Vehicle_1_Type == "Pedal cycle" | Vehicle_2_Type == "Pedal cycle" | Vehicle_3_Type =="Pedal cycle") %>% 
+  count()
+#2665 i.e. 22 % of accidents
+
+test <- collisions %>%
+  slice(1:20) %>% 
+  filter(Vehicle_1_Type != "Pedal cycle" | Vehicle_2_Type != "Pedal cycle" | Vehicle_3_Type !="Pedal cycle") %>% 
+  select(Vehicle_1_Type, Vehicle_3_Type, Vehicle_2_Type)
+
+#---------------------------------------------------------------------#
+#--- is there a link between speed limit and severity of accidents ---#
+#---------------------------------------------------------------------#
+collisions %>%
+  count(Speed_limit) %>% 
+  arrange(desc(n))
+#hard to say because there is no information of frequentation of differents roads with different speed limits
+
+#-----------------------------------------------------------------------------#
+#--- is there a pattern of vehicle position and/or movement in accidents ? ---#
+#-----------------------------------------------------------------------------#
+#what are the most dangerous types of junctions?
+collisions %>%
+  count(`Junction Detail`) %>% 
+  arrange(desc(n))
+#1st is "not at junction"
+#2nd is "T/staggered junction"
+#3rd is "roundabout"
+
+#what is happening most frequently when accidents occur away from a junction
+collisions %>%
+  filter(`Junction Detail` == "Not at junction") %>% 
+  group_by(Vehicle_1_Manouvres, Vehicle_2_Manouvres) %>% 
+  summarise(n=n()) %>% 
+  arrange(desc(n))
+#1st is vehicle alone going ahead
+#2nd is both vehicles going ahead
+#3rd is going ahead VS slow or stopping -> short inter-vehicle distance?
+#4th and 5th is single vehicle in turn
+#6th is going ahead VS parked
+
+collisions %>%
+  filter(`Junction Detail` == "Not at junction",
+         Vehicle_1_Manouvres == "Going ahead",
+         Vehicle_2_Manouvres == "Going ahead") %>% 
+  group_by(Vehicle_1_From_Direction, Vehicle_1_To_Direction, Vehicle_2_From_Direction, Vehicle_2_To_Direction) %>% 
+  summarise(n=n()) %>% 
+  arrange(desc(n))
+#difficult to know more about what happened from vehicle direction or location
+
+#what is happening most frequently when accidents occur at a T/staggered junction?
+collisions %>%
+  filter(`Junction Detail` == "'T'/staggered junctn") %>% 
+  group_by(Vehicle_1_Manouvres, Vehicle_2_Manouvres) %>% 
+  summarise(n=n()) %>% 
+  arrange(desc(n))
+#1st is turning right VS going ahead
+#2nd is single vehicle going ahead
+#3rd is turning left VS going ahead
+
+collisions %>% 
+  filter(`Junction Detail` == "'T'/staggered junctn", 
+         Vehicle_1_Manouvres == "Turning right",
+         Vehicle_2_Manouvres == "Going ahead") %>% 
+  group_by(Vehicle_1_From_Direction, Vehicle_1_To_Direction, Vehicle_2_From_Direction, Vehicle_2_To_Direction) %>% 
+  summarise(n=n()) %>% 
   arrange(desc(n))
 
-#--------------------------------------------#
-#--- where do accidents frequently occur? ---#
-#--------------------------------------------#
-collisions %>%
-  count(Location) %>%
+#what is the most dangerous type of junction when a cyclist is involved?
+#-----------------------------------------------------------------------
+collisions %>% 
+  filter(Vehicle_1_Type == "Pedal cycle" | Vehicle_2_Type == "Pedal cycle" | Vehicle_3_Type =="Pedal cycle") %>% 
+  count(`Junction Detail`) %>% 
   arrange(desc(n))
-#this may not be very useful, as "Location" may have different names for the same place
+#1st is T/staggered junction
+#2nd is not a junction
+#3rd is roundabout
 
-#junction between Park road and Burghley road
-#7 accidents, is there a common pattern in them?
-collisions %>%
-  filter(Location=="PARK RD JUNCTION BURGHLEY RD PETERBOROUGH") %>%
-  select(Date, Severity, Light, Vehicle_1_Type, Vehicle_1_Manouvres, Vehicle_2_Type, Vehicle_2_Manouvres)
-#most of them involve a car and a cycle, some of them in dark conditions
-#it is possible the cycle was not visible enough for the car
-#most accidents happened in 2012 and 2013, so road condition may have improved
-#let's have a look at what the vehicles did
-park_burghley <- collisions %>%
-  filter(Location=="PARK RD JUNCTION BURGHLEY RD PETERBOROUGH") %>%
-  select(Time, Date, Light, Vehicle_1_Type, Vehicle_1_Manouvres, Vehicle_2_Type, Vehicle_2_Manouvres,
-         Vehicle_1_Location, Vehicle_2_Location, Vehicle_1_From_Direction, Vehicle_1_To_Direction,
-         Vehicle_2_From_Direction, Vehicle_2_To_Direction, Easting, Northing)
-#when a cycle was involved, the cycle was either in the middle of or leaving the roundabout
-#consistent with the car driver not seeing the cycling
-#however, 2 times out of 4 the accident happened during the day
-#one accident happened at 7:59am on 22nd April 2015, so the sun could have been low, impairing visibility
-#however, the geometry of the roundabout makes this unlikely, as the car was going North (only very
-#slightly East)
-#from SW to NE (and vice versa) the road is straight, possibly encouraging drivers to cut the roundabout
-#4 times out of 7 a vehicle was going from/to NE/SW
-#with extended filter based on Easting and Northing, I find 18 accidents for this junction
-park_burghley <- collisions %>%
-  mutate(loc_east=Easting %/% 10, loc_north=Northing %/% 10) %>%
-  filter(loc_east >= 51936 & loc_east <= 51938 & loc_north >= 29944 & loc_north <= 29947 ) %>%
-  select(Time, Date, Location, `Junction Detail`, Light, Vehicle_1_Type, Vehicle_1_Manouvres, 
-         Vehicle_2_Type, Vehicle_2_Manouvres,
-         Vehicle_1_Location, Vehicle_2_Location, Vehicle_1_From_Direction, Vehicle_1_To_Direction,
-         Vehicle_2_From_Direction, Vehicle_2_To_Direction, Easting, Northing)
-
-collisions %>%
-  mutate(loc_east=Easting %/% 10, loc_north=Northing %/% 10) %>% #round Easting and Northing to 10 meters
-  select(Date, Road_Class, Main_rd_no, `Junction Detail`, Speed_limit, Location, loc_east, loc_north) %>%
-  count(loc_east, loc_north) %>%
+collisions %>% 
+  filter(Vehicle_1_Type == "Pedal cycle" | Vehicle_2_Type == "Pedal cycle") %>% 
+  filter(`Junction Detail` == "'T'/staggered junctn") %>% 
+  count(Vehicle_1_Manouvres, Vehicle_2_Manouvres) %>% 
   arrange(desc(n))
-#actually this gives less counts than count(Location)
+#1st and 2nd is turning left or right VS going ahead
+#3rd is moving off VS going ahead
 
-#--------------------------------------------------------------------#
-#--- automate counting of number of accidents over Cambridgeshire ---#
-#--------------------------------------------------------------------#
-#determine grid boundaries
-min_east <- min(collisions$Easting)
-max_east <- max(collisions$Easting)
-min_north <- min(collisions$Northing)
-max_north <- max(collisions$Northing)
+collisions %>% 
+  filter(Vehicle_1_Type == "Pedal cycle" | Vehicle_2_Type == "Pedal cycle") %>% 
+  filter(`Junction Detail` == "'T'/staggered junctn") %>% 
+  filter(Vehicle_1_Manouvres == "Moving off", Vehicle_2_Manouvres == "Going ahead") %>% 
+  count(Vehicle_1_From_Direction, Vehicle_1_To_Direction, Vehicle_2_From_Direction, Vehicle_2_To_Direction) %>% 
+  arrange(desc(n))
+#in most manouvres vehicles do not go in the same direction but cross their path
 
-#set arrays to store data
-#next two lines for the whole grid, two subsequent lines for subset
-#easting_cells <- (max_east - min_east) / 50 #number of easting slices used for counting accidents
-#northing_cells <- (max_north - min_north) / 50 #northing slices for counting accidents
-easting_cells <- (553000 - 537000) / 50 #cambridge only
-northing_cells <- (265000 - 252000) / 50 #cambridge only
-m <- easting_cells * northing_cells #number of rows in "coordinates" and "n_collisions" array
-n_collisions <- array(0, c(m + 1, 3)) #array to store number of accidents at a given pair of coordinates
+collisions %>% 
+  filter(Vehicle_1_Type == "Pedal cycle" | Vehicle_2_Type == "Pedal cycle") %>% 
+  filter(`Junction Detail` == "Not at junction") %>% 
+  count(Vehicle_1_Manouvres, Vehicle_2_Manouvres) %>% 
+  arrange(desc(n))
+#1st is both going ahead
+#2nd is one overtaking the other going ahead
+#3rd is one overtaking the other parked
 
-#loop through coordinates and count the number of accidents at each location
-counter = 1 #counter to increment arrays coordinates
-for(i in seq(537000, 553000, 50)){
-  for(j in seq(252000, 265000, 50)){
-    #record coordinates
-    n_collisions[counter, 1] <- i + 25
-    n_collisions[counter, 2] <- j + 25
-    #record number of accidents
-    n_collisions[counter, 3] <- collisions %>%
-      filter(Easting >= i & Easting < i + 50 & Northing >= j & Northing < j + 50) %>%
-      count() %>%
-      .$n
-    counter = counter + 1
-  }
-}
+collisions %>% 
+  filter(Vehicle_1_Type == "Pedal cycle" | Vehicle_2_Type == "Pedal cycle") %>% 
+  filter(`Junction Detail` == "Not at junction") %>% 
+  filter(Vehicle_1_Manouvres == "Going ahead", Vehicle_2_Manouvres == "Going ahead") %>% 
+  count(Vehicle_1_From_Direction, Vehicle_1_To_Direction, Vehicle_2_From_Direction, Vehicle_2_To_Direction) %>% 
+  arrange(desc(n))
+#1st is both vehicles parked
+#many other seems to happen when both vehicles go in the same direction
 
-#convert array to tibble and remove coordinate pairs without recorded accidents
-#and sort coordinate pairs in descending order for number of accidents
-number_collisions <- as_tibble(n_collisions) %>%
-  filter(V3 != 0) %>%
-  arrange(desc(V3)) %>%
-  rename(Easting=V1, Northing=V2, n=V3)
+collisions %>% 
+  filter(Vehicle_1_Type == "Pedal cycle" | Vehicle_2_Type == "Pedal cycle") %>% 
+  filter(`Junction Detail` == "Not at junction") %>% 
+  filter(Vehicle_1_Manouvres == "Going ahead", Vehicle_2_Manouvres == "Going ahead") %>% 
+  filter(Vehicle_1_From_Direction == Vehicle_2_From_Direction & Vehicle_2_To_Direction == Vehicle_1_To_Direction) %>% 
+  count()
+# = 108 / 190 -> 57 % but about same frequency when exluding bicycles from analysis
 
-#save data as csv file
-write_csv(number_collisions, "number_collisions.csv")
 
 #---------------------------------------------------------------#
 # --- hotspot of collisions : Royal Cambridge Hotel junction ---#
@@ -113,6 +229,7 @@ hotspot_3 <- collisions %>%
   select(Date,
          Year,
          Location,
+         Severity,
          Vehicle_1_Type,
          Vehicle_1_Location,
          Vehicle_2_Type,
